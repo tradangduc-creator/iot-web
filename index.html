@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Web ↔ AWS IoT (MQTT over WebSocket)</title>
+  <title>Web → AWS IoT (HTTPS Publish)</title>
   <style>
     body { font-family: system-ui, Arial, sans-serif; margin: 40px auto; max-width: 760px; text-align: center; }
     h2 { color: #222; }
@@ -17,102 +17,52 @@
   </style>
 </head>
 <body>
-  <h2>Điều khiển & giám sát IoT qua AWS</h2>
+  <h2>Điều khiển IoT qua AWS (HTTPS Publish)</h2>
   <div class="buttons">
     <button id="btnStart">▶ Gửi START</button>
     <button id="btnStop">⏹ Gửi STOP</button>
   </div>
   <pre id="log">Đang khởi động...</pre>
 
-  <!-- AWS SDK v2 (Cognito) -->
+  <!-- Chỉ cần AWS SDK v2 -->
   <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1481.0.min.js"></script>
-
-  <!-- ƯU TIÊN: Tải SDK cục bộ (file trong thư mục /js). Nếu thiếu, sẽ tự fallback sang CDN. -->
-  <script src="./js/aws-iot-sdk-browser-bundle.min.js"></script>
   <script>
-    // Nếu file cục bộ không có hoặc không định nghĩa awsIot, tự động thử load từ CDN để chạy trên GitHub Pages.
-    (function ensureAwsIotLoaded() {
-      if (typeof window.awsIot !== 'undefined') return;
-      const cdns = [
-        "https://cdn.jsdelivr.net/npm/aws-iot-device-sdk/browser/aws-iot-sdk-browser-bundle.min.js",
-        "https://unpkg.com/aws-iot-device-sdk/browser/aws-iot-sdk-browser-bundle.min.js"
-      ];
-      const tryLoad = (i=0)=>{
-        if(i>=cdns.length) { console.error("Không tải được AWS IoT SDK từ CDN."); return; }
-        const s=document.createElement('script'); s.src=cdns[i]; s.async=true;
-        s.onload=()=>console.log("Loaded AWS IoT SDK from", cdns[i]);
-        s.onerror=()=>tryLoad(i+1);
-        document.head.appendChild(s);
-      };
-      tryLoad();
-    })();
-  </script>
-
-  <script>
-  // ====== THÔNG TIN CỦA BẠN (ĐÃ CẤU HÌNH SẴN) ======
+  // ===== CẤU HÌNH CỦA BẠN =====
   const REGION = 'ap-southeast-1';
   const IDENTITY_POOL_ID = 'ap-southeast-1:4b3cda65-f97c-4b12-9619-18ace38d8cf7';
-  const IOT_HOST = 'd06271991l2t0ukufb3u9-ats.iot.ap-southeast-1.amazonaws.com';
-  const TOPIC_PUB = 'web/control';   // Topic gửi lệnh
-  const TOPIC_SUB = 'device/+/out';  // Topic nhận phản hồi
-  // ================================================
+  const IOT_DATA_ENDPOINT = 'https://d06271991l2t0ukufb3u9-ats.iot.ap-southeast-1.amazonaws.com';
+  const TOPIC_PUB = 'web/control';
+  // ============================
 
   const $log = document.getElementById('log');
-  const log = (...a)=>{ $log.textContent += a.join(' ') + "\n"; $log.scrollTop = $log.scrollHeight; };
+  const log = (...a)=>{ $log.textContent += a.join(' ') + '\n'; $log.scrollTop = $log.scrollHeight; };
 
-  // Chờ đến khi SDK awsIot có mặt
-  function whenAwsIotReady(cb){
-    if (typeof window.awsIot !== 'undefined') return cb();
-    let retry = 0;
-    const id = setInterval(()=>{
-      if (typeof window.awsIot !== 'undefined') { clearInterval(id); cb(); }
-      else if (++retry>50){ clearInterval(id); log("❌ Không thể nạp aws-iot SDK. Kiểm tra file ./js/aws-iot-sdk-browser-bundle.min.js hoặc CDN."); }
-    }, 100);
-  }
+  // 1) Cognito credentials
+  AWS.config.region = REGION;
+  AWS.config.credentials = new AWS.CognitoIdentityCredentials({ IdentityPoolId: IDENTITY_POOL_ID });
 
-  whenAwsIotReady(() => {
-    // 1) Cognito credentials
-    AWS.config.region = REGION;
-    AWS.config.credentials = new AWS.CognitoIdentityCredentials({ IdentityPoolId: IDENTITY_POOL_ID });
-    AWS.config.credentials.get((err) => {
-      if (err) { log('❌ Lỗi Cognito:', err); return; }
-      log('✅ Đã có AWS credentials từ Cognito.');
+  let iotData = null;
+  AWS.config.credentials.get((err) => {
+    if (err) { log('❌ Lỗi Cognito:', err); return; }
+    log('✅ Đã có AWS credentials từ Cognito.');
 
-      const creds = AWS.config.credentials;
-      const clientId = 'web-' + Math.floor(Math.random()*1e8);
-
-      // 2) Kết nối MQTT qua WebSocket
-      const device = awsIot.device({
-        region: REGION,
-        host: IOT_HOST,
-        protocol: 'wss',
-        clientId,
-        accessKeyId: creds.accessKeyId,
-        secretKey: creds.secretAccessKey,
-        sessionToken: creds.sessionToken,
-        maximumReconnectTimeMs: 8000,
-        debug: false
-      });
-
-      device.on('connect', () => {
-        log('🔗 MQTT connected as', clientId);
-        device.subscribe(TOPIC_SUB, undefined, (e)=> e && log('⚠️ Sub error:', e));
-      });
-      device.on('message', (topic, payload)=> log('📥', topic, payload.toString()));
-      device.on('error',   (e)=> log('⚠️ MQTT error:', e));
-      device.on('reconnect', ()=> log('↻ reconnect...'));
-      device.on('close', ()=> log('❌ MQTT closed'));
-
-      // 3) Gửi lệnh
-      function send(cmd){
-        const msg = { cmd, ts: Date.now() };
-        device.publish(TOPIC_PUB, JSON.stringify(msg));
-        log('📤 Sent:', JSON.stringify(msg));
-      }
-      document.getElementById('btnStart').onclick = ()=> send('START');
-      document.getElementById('btnStop').onclick  = ()=> send('STOP');
-    });
+    // 2) Khởi tạo IoT Data client (HTTPS)
+    iotData = new AWS.IotData({ endpoint: IOT_DATA_ENDPOINT.replace('https://','') });
+    log('🔗 Sẵn sàng publish qua HTTPS tới:', IOT_DATA_ENDPOINT);
   });
+
+  // 3) Gửi lệnh START/STOP (HTTPS Publish)
+  function send(cmd){
+    if (!iotData) { log('⏳ Đang khởi tạo… vui lòng đợi'); return; }
+    const msg = { cmd, ts: Date.now() };
+    const params = { topic: TOPIC_PUB, payload: JSON.stringify(msg), qos: 0 };
+    iotData.publish(params, (err, data)=>{
+      if (err) log('⚠️ Publish error:', JSON.stringify(err));
+      else     log('📤 Đã gửi (HTTPS):', JSON.stringify(msg), '→', TOPIC_PUB);
+    });
+  }
+  document.getElementById('btnStart').onclick = ()=> send('START');
+  document.getElementById('btnStop').onclick  = ()=> send('STOP');
   </script>
 </body>
 </html>
