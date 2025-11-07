@@ -13,7 +13,7 @@
       border-radius: 8px; font-size: 15px; cursor: pointer;
     }
     button:hover { background:#0a53be; }
-    pre { background:#111; color:#0f0; padding:14px; min-height:220px; border-radius: 10px; text-align:left; }
+    pre { background:#111; color:#0f0; padding:14px; min-height:220px; border-radius: 10px; text-align:left; overflow:auto; }
   </style>
 </head>
 <body>
@@ -30,14 +30,17 @@
   // ===== CẤU HÌNH CỦA BẠN =====
   const REGION = 'ap-southeast-1';
   const IDENTITY_POOL_ID = 'ap-southeast-1:4b3cda65-f97c-4b12-9619-18ace38d8cf7';
-  const IOT_DATA_ENDPOINT = 'https://d06271991l2t0ukufb3u9-ats.iot.ap-southeast-1.amazonaws.com';
-  const TOPIC_PUB = 'web/control';
+
+  // ✅ DÙNG ENDPOINT REST CHUẨN CHO IOT DATA PLANE (KHÔNG DÙNG ENDPOINT DÀI CỦA BROKER)
+  const IOT_DATA_ENDPOINT = 'https://data-ats.iot.ap-southeast-1.amazonaws.com';
+
+  const TOPIC_PUB = 'web/control';     // Web gửi lệnh
   // ============================
 
   const $log = document.getElementById('log');
   const log = (...a)=>{ $log.textContent += a.join(' ') + '\n'; $log.scrollTop = $log.scrollHeight; };
 
-  // 1) Cognito credentials
+  // 1) Lấy credentials từ Cognito
   AWS.config.region = REGION;
   AWS.config.credentials = new AWS.CognitoIdentityCredentials({ IdentityPoolId: IDENTITY_POOL_ID });
 
@@ -46,21 +49,22 @@
     if (err) { log('❌ Lỗi Cognito:', err); return; }
     log('✅ Đã có AWS credentials từ Cognito.');
 
-    // 2) Khởi tạo IoT Data client (HTTPS)
+    // 2) Khởi tạo IoT Data client (HTTPS) — cần hostname, KHÔNG có "https://"
     iotData = new AWS.IotData({ endpoint: IOT_DATA_ENDPOINT.replace('https://','') });
     log('🔗 Sẵn sàng publish qua HTTPS tới:', IOT_DATA_ENDPOINT);
   });
 
-  // 3) Gửi lệnh START/STOP (HTTPS Publish)
+  // 3) Hàm gửi lệnh qua HTTPS Publish
   function send(cmd){
     if (!iotData) { log('⏳ Đang khởi tạo… vui lòng đợi'); return; }
-    const msg = { cmd, ts: Date.now() };
-    const params = { topic: TOPIC_PUB, payload: JSON.stringify(msg), qos: 0 };
+    const payload = JSON.stringify({ cmd, ts: Date.now() });
+    const params = { topic: TOPIC_PUB, payload, qos: 0 };
     iotData.publish(params, (err, data)=>{
       if (err) log('⚠️ Publish error:', JSON.stringify(err));
-      else     log('📤 Đã gửi (HTTPS):', JSON.stringify(msg), '→', TOPIC_PUB);
+      else     log('📤 Đã gửi (HTTPS):', payload, '→', TOPIC_PUB);
     });
   }
+
   document.getElementById('btnStart').onclick = ()=> send('START');
   document.getElementById('btnStop').onclick  = ()=> send('STOP');
   </script>
